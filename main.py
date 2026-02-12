@@ -2,26 +2,33 @@ import cv2
 import time
 import sys
 import os
+import argparse
 
 from hand_tracker import HandTracker
-from model_loader import ModelLoader
-from word_builder import WordBuilder
+# from model_loader import ModelLoader
+# from word_builder import WordBuilder
 from speech_engine import SpeechEngine
+from gesture_recognizer import GestureRecognizer
 
 def main():
-    print("Initializing Sign2Speech...")
+    parser = argparse.ArgumentParser(description="Sign2Speech - Edge AI Fingerspelling Translator")
+    parser.add_argument("--source", type=str, default="0", help="Video source: webcam index (0) or URL (http://...)")
+    args = parser.parse_args()
+
+    print("Initializing Sign2Speech (Whole Word Mode)...")
     
     # Initialize components
     try:
         # Check if model exists
-        if not os.path.exists("model.tflite"):
-            print("ERROR: 'model.tflite' not found in current directory.")
-            print("Please place the Ishara TFLite model file in this folder.")
+        if not os.path.exists("lstm_model.tflite"):
+            print("ERROR: 'lstm_model.tflite' not found in current directory.")
+            print("Please run train_lstm.py first.")
             return
 
         tracker = HandTracker(detection_con=0.7, max_hands=1)
-        model = ModelLoader(model_path="model.tflite")
-        wb = WordBuilder(stability_duration=1.0)
+        # model = ModelLoader(model_path="model.tflite")
+        # wb = WordBuilder(stability_duration=1.0)
+        recognizer = GestureRecognizer()
         speech = SpeechEngine()
         
     except Exception as e:
@@ -29,12 +36,21 @@ def main():
         return
 
     # Initialize Camera
-    cap = cv2.VideoCapture(0)
-    # Set resolution to 640x480
+    source = args.source
+    if source.isdigit():
+        source = int(source)
+    
+    print(f"Opening video source: {source}")
+    cap = cv2.VideoCapture(source)
+    
+    # Set resolution to 640x480 (Only works for local webcams usually, safely ignored for streams)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
     print("Starting Main Loop. Press 'q' or 'Esc' to exit.")
+    
+    last_word = ""
+    cooldown_counter = 0
 
     try:
         while cap.isOpened():
@@ -47,50 +63,41 @@ def main():
             tracker.find_hands(img, draw=True)
             lm_list = tracker.get_landmark_data()
 
-            current_char = ""
+            current_word = "Listening..."
             
             if lm_list:
-                # 2. Predict
+                # 2. Recognize Gesture
                 try:
-                    predicted_char = model.predict(lm_list)
+                    prediction = recognizer.process_landmarks(lm_list)
                     
-                    # 3. Stabilize & Build Word
-                    confirmed_char = wb.process_letter(predicted_char)
-                    
-                    current_char = predicted_char
-                    
-                    # 4. Check Vocabulary
-                    matched_word = wb.check_word()
-                    if matched_word:
-                        print(f"Matched Word: {matched_word}")
-                        speech.say(matched_word)
+                    if prediction:
+                        current_word = f"Recognized: {prediction}"
+                        
+                        # Simple debounce/cooldown
+                        if prediction != last_word or cooldown_counter > 30:
+                            print(f"Matched Word: {prediction}")
+                            speech.say(prediction)
+                            last_word = prediction
+                            cooldown_counter = 0
+                        
+                    if last_word == prediction:
+                        cooldown_counter += 1
                         
                 except Exception as e:
                     print(f"Prediction error: {e}")
+            else:
+                recognizer.clear()
+                current_word = "No Hand"
 
             # UI Display
             # Draw distinct box for stats
             cv2.rectangle(img, (0, 0), (640, 80), (0, 0, 0), cv2.FILLED)
             
             # Display Prediction
-            cv2.putText(img, f"Char: {current_char}", (10, 50), 
-                        cv2.FONT_HERSHEY_PLAIN, 2, (255, 0, 255), 3)
-            
-            # Display Buffer
-            word_buffer = wb.get_current_word()
-            cv2.putText(img, f"Word: {word_buffer}", (250, 50), 
+            cv2.putText(img, current_word, (10, 50), 
                         cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 0), 3)
 
-            # Show progress bar for stability (Visual feedback)
-            if lm_list and wb.last_letter:
-                 # Calculate progress
-                 elapsed = time.time() - wb.stable_start_time
-                 progress = min(elapsed / wb.stability_duration, 1.0)
-                 bar_width = int(200 * progress)
-                 if bar_width > 0:
-                     cv2.rectangle(img, (10, 60), (10 + bar_width, 70), (0, 255, 255), cv2.FILLED)
-
-            cv2.imshow("Sign2Speech - Standard/Ishara", img)
+            cv2.imshow("Sign2Speech - Whole Word (LSTM)", img)
 
             key = cv2.waitKey(1)
             if key == ord('q') or key == 27: # q or ESC
