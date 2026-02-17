@@ -3,3 +3,4 @@ mediapipe
 tensorflow
 numpy
 pyttsx3
+requests
