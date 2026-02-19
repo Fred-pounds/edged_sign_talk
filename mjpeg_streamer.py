@@ -23,10 +23,15 @@ class MJPEGStreamer:
         return self
 
     def _update(self):
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
         try:
-            stream = requests.get(self.url, stream=True, timeout=10)
+            stream = requests.get(self.url, stream=True, timeout=15, headers=headers)
             if stream.status_code != 200:
                 print(f"Failed to connect to stream: {stream.status_code}")
+                if stream.status_code == 404:
+                    print("Check if the URL path (e.g. /stream) and PORT are correct for your ESP32 sketch.")
                 return
 
             bytes_buffer = bytes()
@@ -35,20 +40,27 @@ class MJPEGStreamer:
                     break
                 
                 bytes_buffer += chunk
-                a = bytes_buffer.find(b'\xff\xd8')
-                b = bytes_buffer.find(b'\xff\xd9')
                 
-                if a != -1 and b != -1:
+                while True:
+                    a = bytes_buffer.find(b'\xff\xd8') # JPEG Start
+                    if a == -1:
+                        break
+                    
+                    b = bytes_buffer.find(b'\xff\xd9', a) # JPEG End (must be after start)
+                    if b == -1:
+                        break
+                        
                     jpg = bytes_buffer[a:b+2]
                     bytes_buffer = bytes_buffer[b+2:]
                     
-                    # Decode image
-                    img = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
-                    
-                    if img is not None:
-                        with self.lock:
-                            self.frame = img
-                            
+                    if len(jpg) > 0:
+                        # Decode image
+                        img = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                        
+                        if img is not None:
+                            with self.lock:
+                                self.frame = img
+                        
         except Exception as e:
             print(f"Stream error: {e}")
         finally:
